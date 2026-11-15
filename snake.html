@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snake</title>
+<style>
+  html, body { margin: 0; height: 100%; display: grid; place-items: center; background: #121218; }
+  canvas {
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .6);
+    touch-action: none;      /* stop the page scrolling while swiping */
+    max-width: 100vw;
+    height: auto;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="600" height="400"></canvas>
+<script>
+"use strict";
+
+// ---- Configuration (same numbers as the pygame version) ----
+const CELL = 20, COLS = 30, ROWS = 20;
+const BASE_FPS = 10, MAX_FPS = 20;
+
+// ---- Colors ----
+const BG = "#121218", GRID = "#1e1e28", HEAD = "#55dc5a",
+      BODY = "#37aa3c", FOOD = "#eb5046", TEXT = "#f0f0f0";
+
+// ---- Directions ----
+const DIRS = {
+  up:    { x: 0, y: -1 }, down: { x: 0, y: 1 },
+  left:  { x: -1, y: 0 }, right: { x: 1, y: 0 },
+};
+const OPPOSITE = { up: "down", down: "up", left: "right", right: "left" };
+const KEY_DIRS = {
+  ArrowUp: "up",       KeyW: "up",
+  ArrowDown: "down",   KeyS: "down",
+  ArrowLeft: "left",   KeyA: "left",
+  ArrowRight: "right", KeyD: "right",
+};
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+// ---- High-DPI canvas ----
+const W = COLS * CELL, H = ROWS * CELL;   // logical size (600 x 400)
+function fitCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";   // height stays auto in CSS; intrinsic ratio keeps it correct
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in logical pixels
+}
+fitCanvas();
+window.addEventListener("resize", fitCanvas);   // dpr can change (zoom, monitor move)
+
+let snake, dir, queue, food, score, gameOver, won, paused;
+let lastTime = 0, acc = 0;
+
+// Best score, persisted across sessions
+let highScore = 0;
+try { highScore = +localStorage.getItem("snakeHigh") || 0; } catch (e) { /* storage blocked */ }
+function endGame(win) {
+  gameOver = true; won = win;
+  if (score > highScore) {
+    highScore = score;
+    try { localStorage.setItem("snakeHigh", highScore); } catch (e) { /* storage blocked */ }
+  }
+}
+
+function reset() {
+  const cx = COLS >> 1, cy = ROWS >> 1;
+  snake = [{ x: cx, y: cy }, { x: cx - 1, y: cy }, { x: cx - 2, y: cy }];
+  dir = "right"; queue = [];
+  score = 0; gameOver = won = paused = false;
+  acc = 0;
+  food = spawnFood();
+}
+
+function spawnFood() {
+  const free = [];
+  for (let x = 0; x < COLS; x++)
+    for (let y = 0; y < ROWS; y++)
+      if (!snake.some(s => s.x === x && s.y === y)) free.push({ x, y });
+  return free.length ? free[(Math.random() * free.length) | 0] : null;
+}
+
+function update() {
+  if (queue.length) dir = queue.shift();
+
+  const nx = snake[0].x + DIRS[dir].x;
+  const ny = snake[0].y + DIRS[dir].y;
+  const ate = food && nx === food.x && ny === food.y;
+
+  const hitWall = nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS;
+  const body = ate ? snake : snake.slice(0, -1);   // tail cell is safe unless growing
+  const hitSelf = body.some(s => s.x === nx && s.y === ny);
+
+  if (hitWall || hitSelf) { endGame(false); return; }
+
+  snake.unshift({ x: nx, y: ny });
+  if (ate) {
+    score++;
+    food = spawnFood();
+    if (!food) endGame(true);   // board completely full — you win!
+  } else {
+    snake.pop();
+  }
+}
+
+// ---- Drawing ----
+function draw() {
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle grid lines
+  ctx.strokeStyle = GRID;
+  ctx.beginPath();
+  for (let x = CELL; x < W; x += CELL) { ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, H); }
+  for (let y = CELL; y < H; y += CELL) { ctx.moveTo(0, y + .5); ctx.lineTo(W, y + .5); }
+  ctx.stroke();
+
+  // Food
+  if (food) {
+    ctx.fillStyle = FOOD;
+    ctx.beginPath();
+    ctx.arc(food.x * CELL + CELL / 2, food.y * CELL + CELL / 2, CELL / 2 - 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Snake (head is brighter)
+  snake.forEach((s, i) => {
+    ctx.fillStyle = i === 0 ? HEAD : BODY;
+    const px = s.x * CELL + 1, py = s.y * CELL + 1, sz = CELL - 2;
+    if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(px, py, sz, sz, 5); ctx.fill(); }
+    else ctx.fillRect(px, py, sz, sz);
+  });
+
+  // Score
+  ctx.fillStyle = TEXT;
+  ctx.font = "bold 20px system-ui, sans-serif";
+  ctx.fillText(`Score: ${score}`, 10, 26);
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#9a9aa8";
+  ctx.fillText(`Best: ${highScore}`, W - 10, 26);
+  ctx.textAlign = "left";
+
+  if (gameOver) {
+    overlay();
+    centeredText(won ? "YOU WIN!" : "GAME OVER", -20, 48);
+    centeredText(`Final score: ${score}`, 36, 22);
+    if (score === highScore && score > 0) centeredText("New best!", 62, 16);
+    centeredText("Enter / tap to play again", 88, 16);
+  } else if (paused) {
+    overlay();
+    centeredText("PAUSED", -10, 48);
+    centeredText("Press P or Space / tap to resume", 40, 18);
+  }
+}
+
+function overlay() {
+  ctx.fillStyle = "rgba(0, 0, 0, .67)";
+  ctx.fillRect(0, 0, W, H);
+}
+
+function centeredText(str, yOffset, size) {
+  ctx.fillStyle = TEXT;
+  ctx.font = `bold ${size}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(str, W / 2, H / 2 + yOffset);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+}
+
+// ---- Input ----
+window.addEventListener("keydown", e => {
+  if (e.code in KEY_DIRS || e.code === "Space") e.preventDefault();  // stop page scrolling
+
+  if (gameOver) {
+    if (e.code === "Enter" || e.code === "Space") reset();
+    return;
+  }
+  if (e.code === "KeyP" || e.code === "Space") { paused = !paused; return; }
+
+  const d = KEY_DIRS[e.code];
+  if (d && !paused) {
+    const last = queue.length ? queue[queue.length - 1] : dir;
+    if (d !== last && d !== OPPOSITE[last]) queue.push(d);
+  }
+});
+
+// Swipe controls for phones
+let touch = null;
+canvas.addEventListener("touchstart", e => { touch = e.changedTouches[0]; }, { passive: true });
+canvas.addEventListener("touchend", e => {
+  if (!touch) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touch.clientX, dy = t.clientY - touch.clientY;
+  touch = null;
+
+  if (Math.hypot(dx, dy) < 24) {              // tap
+    if (gameOver) reset(); else paused = !paused;
+    return;
+  }
+  const d = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left")
+                                        : (dy > 0 ? "down" : "up");
+  const last = queue.length ? queue[queue.length - 1] : dir;
+  if (!paused && d !== last && d !== OPPOSITE[last]) queue.push(d);
+});
+
+// Auto-pause when the tab loses focus
+window.addEventListener("blur", () => { if (!gameOver) paused = true; });
+
+// ---- Main loop (requestAnimationFrame + fixed-step accumulator) ----
+function frame(t) {
+  requestAnimationFrame(frame);
+  if (!lastTime) { lastTime = t; draw(); return; }   // first frame: no dt yet
+  const dt = Math.min(t - lastTime, 100);      // ignore huge gaps (tab in background)
+  lastTime = t;
+
+  if (!gameOver && !paused) {
+    acc += dt;
+    const step = 1000 / Math.min(MAX_FPS, BASE_FPS + Math.floor(score / 4));  // speeds up as you eat
+    while (acc >= step) { acc -= step; update(); if (gameOver) break; }
+  }
+  draw();
+}
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
+
